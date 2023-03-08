@@ -1,0 +1,171 @@
+using LinearAlgebra
+using Random
+using StatsBase
+using Distributions
+
+function kernel_matrix(N)
+    if N == 1
+        return [1 0;1 1]
+    end
+    sub_matrix = kernel_matrix(N-1)
+    r1 = hcat(sub_matrix,sub_matrix.*0)
+    r2 = hcat(sub_matrix,sub_matrix)
+    return vcat(r1,r2)
+end
+
+function permute_matrix(n)
+    bit_length = Int(log2(n))
+    result = zeros(Int8,n,n)
+    reverse_pair = []
+    for i in 0:n-1
+        q = bit_reversal(Int(i),bit_length)
+        push!(reverse_pair,(Int(i+1),Int(q+1) ) ) 
+    end
+    for pair in reverse_pair
+        result[ pair[1],pair[2] ] = 1
+    end
+    return result
+end
+
+function bit_reversal(input_bit,bit_length)
+    temp_bit = input_bit
+    reversed_bit = 0
+    for i in 1:bit_length
+        bit = temp_bit & 1
+        temp_bit  = temp_bit >> 1
+        bit = bit << Int(bit_length-i)
+        reversed_bit = reversed_bit | bit
+    end
+    return reversed_bit
+end
+
+function monomial_matrix(m)
+    G = permute_matrix(2^m)*kernel_matrix(m)
+    return view(G,reverse(collect(1:2^m)),:)
+end
+
+
+function encoder(input_text,print=true)
+    n = length(input_text)
+    N = Int(log2(n))
+    G = br_matrix(n)*F_matrix(N)
+    if size(input_text)[2] == size(G)[1]
+        code =  input_text*G
+    else
+        code =  adjoint(input_text)*G
+    end
+    code = code.%2
+    if print
+        println("The encoded codeword is ",code)
+    end
+    return (code,G)
+end
+
+
+function codeword_decode(codeword,G,print=true)
+    if size(codeword)[2] == size(G)[1]
+        info_bits = codeword*inv(G)
+    else
+        info_bits = adjoint(codeword)*inv(G)
+    end
+    info_bits = abs.(info_bits)
+    info_bits =  Int.(info_bits.%2)
+    if print
+        println("The decoded information bits are ",info_bits)
+    end
+    return info_bits
+end
+
+function RM_bits(r,m)
+    G = permute_matrix(2^m)*kernel_matrix(m)
+    frozen_bits = []
+    channel_bits = []
+    for i in 1:2^m
+        if sum(G[i,:])<2^(m-r)
+            push!(frozen_bits,i)
+        else
+            push!(channel_bits,i)
+        end
+    end
+    return (channel_bits,frozen_bits)
+end
+
+function box_plus(a,b)
+   return log( (exp(a+b)+1) / ( exp(a)+exp(b)) )    
+end
+
+
+# trans_matrix*codeword' is the corresponding automorphism
+function affine_trans_matrix(A,b)    
+    n = length(b)
+    block_length = 2^n
+    trans_matrix = zeros(Int8,block_length,block_length)
+    for i in 0:block_length-1
+        bin_vec = digits(i,base=2,pad=n)
+        vec_T = reshape((A*bin_vec+b').%2,n)
+        π_i = binary_vector_to_int(reverse(vec_T))
+       # println("Position ",i+1," maps to ",π_i+1)
+        trans_matrix[i+1,π_i+1] = 1
+    end
+    return trans_matrix
+end
+
+
+
+function int_to_binary_vector(int_number,bit_length)
+    result = []
+    for i= 1:bit_length
+        result = push!(result,Int(int_number%2))
+        int_number = floor(int_number/2)
+    end
+    return reverse(result)
+end
+
+function binary_vector_to_int(bin_vec)
+    n = length(bin_vec)
+    result = 0
+    for i in 1:n
+       result = result+ 2^(n-i)*bin_vec[i] 
+    end
+    return result
+end
+
+#test if the code is correctable with the RM code
+#d_min = 2^(m-r)
+# The number of correctable weight is less than d_min/2
+function SC_dec_test(r,m,error_weight)
+   
+    weight = 2^(m-rand(0:r))
+   
+    position = sample(1:2^m,weight,replace = false)
+    codeword = ones(Int8,2^m,1)
+    codeword[1:2^(m-1)] = zeros(Int8,2^(m-1),1)
+    
+    position = sample(1:2^m,error_weight,replace = false)
+    error = zeros(Int8,2^m)
+    error[position] = ones(Int8,error_weight)
+    
+    y = (codeword+error).%2
+    y[y.==0].=-1
+    frozen_bits = RM_frozen_bits(r,m)
+    cx_prob=sum(error)/length(error)
+    c_d=SC_decoder(y,frozen_bits,cx_prob,true)
+   #println("The error is", error)
+    if c_d == codeword
+        #println("YES,YES,YES")
+        return true
+    else
+        #println(c_d)
+        #println(codeword)
+        return false
+    end
+end
+
+function LLR_Gaussian(x,noise_power)
+    n = length(x)
+    dis = truncated( Normal(0,sqrt(noise_power)),-Inf,Inf)
+    noise = rand(dis,n)
+    y = (x)+transpose(noise)
+    LLR = y.*(-2).+1
+    return LLR./(2*noise_power)
+end
